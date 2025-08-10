@@ -738,10 +738,10 @@ export default function BudgetApp() {
   }
 
   function txnKey(categoryId: string, amount: number, dateISO: string, note?: string | null): string {
-    // Normalize date to epoch ms and note to lowercase trimmed to avoid string formatting differences
-    const ts = new Date(dateISO).getTime()
+    // Normalize date to YYYY-MM-DD format to avoid timezone issues
+    const datePart = new Date(dateISO).toISOString().split('T')[0]
     const nn = (note ?? "").trim().toLowerCase()
-    return `${categoryId}|${toFixed2(Number(amount))}|${ts}|${nn}`
+    return `${categoryId}|${toFixed2(Number(amount))}|${datePart}|${nn}`
   }
 
   async function syncLocalToSupabase() {
@@ -810,7 +810,16 @@ export default function BudgetApp() {
       for (const lt of localTxs) {
         const mappedCat = catIdMap.get(lt.categoryId) || lt.categoryId
         const key = txnKey(mappedCat, lt.amount, lt.date, lt.note)
+        
+        // Skip if already exists in server
         if (serverTxnSet.has(key)) continue
+        
+        // Additional check: verify the transaction doesn't already exist with a different ID
+        const existingTxn = serverTxs.find(tt => 
+          txnKey(tt.categoryId, Number(tt.amount), tt.date, tt.note) === key
+        )
+        if (existingTxn) continue
+        
         const { error } = await supabase.from("transactions").insert({
           user_id: userId,
           category_id: mappedCat,
@@ -967,13 +976,31 @@ export default function BudgetApp() {
                     for (const t of incomingTxs) {
                       const targetCat = localIdToTargetId.get(t.categoryId) ?? t.categoryId
                       const candidate: Transaction = { ...t, id: uid(), categoryId: targetCat }
+                      
                       if (userId && supabase) {
-                        // Prevent duplicate against current state
-                        if (existsTxn(
-                          { ...candidate, id: "" },
-                          transactions.map((y) => ({ ...y, id: "" })),
-                        ))
-                          continue
+                        // Check against current state and server state
+                        const candidateKey = txnKey(candidate.categoryId, candidate.amount, candidate.date, candidate.note)
+                        
+                        // Check if it already exists in current transactions
+                        const existsInCurrent = transactions.some(existing => 
+                          txnKey(existing.categoryId, existing.amount, existing.date, existing.note) === candidateKey
+                        )
+                        
+                        if (existsInCurrent) continue
+                        
+                        // Additional server-side duplicate check
+                        const { data: existingServerTxn } = await supabase
+                          .from("transactions")
+                          .select("id")
+                          .eq("user_id", userId)
+                          .eq("category_id", candidate.categoryId)
+                          .eq("amount", candidate.amount)
+                          .eq("date", candidate.date)
+                          .eq("note", candidate.note ?? null)
+                          .limit(1)
+                        
+                        if (existingServerTxn && existingServerTxn.length > 0) continue
+                        
                         const { error } = await supabase.from("transactions").insert({
                           user_id: userId,
                           category_id: candidate.categoryId,
