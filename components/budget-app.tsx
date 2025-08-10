@@ -173,10 +173,9 @@ function useCurrency() {
   return useContext(CurrencyContext)
 }
 
-function seedIfNeeded() {
+function generateSampleData() {
   try {
     if (typeof window === "undefined") return
-    if (localStorage.getItem(SEEDED_KEY)) return
     const categories: Category[] = [
       { id: uid(), name: "Supermercado", color: "#7c3aed", emoji: "🛒", budget: 300 },
       { id: uid(), name: "Comida", color: "#ef4444", emoji: "🍔", budget: 180 },
@@ -202,8 +201,9 @@ function seedIfNeeded() {
     localStorage.setItem(CATEGORIES_KEY, JSON.stringify(categories))
     localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(txns))
     localStorage.setItem(SEEDED_KEY, "1")
+    return { categories, transactions: txns }
   } catch {
-    // ignore
+    return null
   }
 }
 
@@ -463,9 +463,35 @@ export default function BudgetApp() {
   // Load auth state
   useEffect(() => {
     if (!supabase) return
-    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null))
+    supabase.auth.getUser().then(({ data }) => {
+      const newUserId = data.user?.id ?? null
+      setUserId(newUserId)
+      
+      // If user just logged in and we have local data, clear it to prevent ghost data
+      if (newUserId) {
+        const seeded = localStorage.getItem(SEEDED_KEY)
+        if (seeded !== "1") {
+          // Clear any auto-generated or old data when user logs in
+          localStorage.removeItem(CATEGORIES_KEY)
+          localStorage.removeItem(TRANSACTIONS_KEY)
+          localStorage.removeItem(SEEDED_KEY)
+        }
+      }
+    })
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUserId(session?.user?.id ?? null)
+      const newUserId = session?.user?.id ?? null
+      setUserId(newUserId)
+      
+      // If user just logged in and we have local data, clear it to prevent ghost data
+      if (newUserId) {
+        const seeded = localStorage.getItem(SEEDED_KEY)
+        if (seeded !== "1") {
+          // Clear any auto-generated or old data when user logs in
+          localStorage.removeItem(CATEGORIES_KEY)
+          localStorage.removeItem(TRANSACTIONS_KEY)
+          localStorage.removeItem(SEEDED_KEY)
+        }
+      }
     })
     return () => data.subscription.unsubscribe()
   }, [supabase])
@@ -505,13 +531,21 @@ export default function BudgetApp() {
         setTransactions(txsMapped)
       })()
     } else {
-      // Load from local
-      seedIfNeeded()
+      // Load from local storage only if we have a previous session
+      // Check if we have any data that was created by a logged-in user
       try {
         const cs = localStorage.getItem(CATEGORIES_KEY)
         const ts = localStorage.getItem(TRANSACTIONS_KEY)
-        if (cs) setCategories(JSON.parse(cs))
-        if (ts) setTransactions(JSON.parse(ts))
+        const seeded = localStorage.getItem(SEEDED_KEY)
+        
+        // Only load data if it was explicitly created by the user
+        // The SEEDED_KEY indicates that data was intentionally generated
+        if (cs && seeded === "1") {
+          setCategories(JSON.parse(cs))
+        }
+        if (ts && seeded === "1") {
+          setTransactions(JSON.parse(ts))
+        }
       } catch {
         // ignore
       }
@@ -1038,6 +1072,15 @@ export default function BudgetApp() {
                   }}
                 />
                 <AdvancedMenu
+                  hasData={categories.length > 0 || transactions.length > 0}
+                  onGenerateSample={() => {
+                    const sampleData = generateSampleData()
+                    if (sampleData) {
+                      setCategories(sampleData.categories)
+                      setTransactions(sampleData.transactions)
+                      toast({ title: "Datos de ejemplo generados", description: "Se han creado categorías y transacciones de ejemplo" })
+                    }
+                  }}
                   onWipe={async () => {
                     const doLocalClear = () => {
                       setCategories([])
@@ -1789,8 +1832,14 @@ function DataIOButtons(props: {
   )
 }
 
-function AdvancedMenu(props: { onWipe: () => void }) {
+function AdvancedMenu(props: { 
+  onWipe: () => void
+  onGenerateSample?: () => void
+  hasData: boolean
+}) {
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [sampleConfirmOpen, setSampleConfirmOpen] = useState(false)
+  
   return (
     <>
       <DropdownMenu>
@@ -1801,6 +1850,11 @@ function AdvancedMenu(props: { onWipe: () => void }) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {!props.hasData && props.onGenerateSample && (
+            <DropdownMenuItem onClick={() => setSampleConfirmOpen(true)}>
+              Generar datos de ejemplo
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onClick={() => setConfirmOpen(true)} className="text-red-600">
             Vaciar todos los datos
           </DropdownMenuItem>
@@ -1827,6 +1881,29 @@ function AdvancedMenu(props: { onWipe: () => void }) {
               }}
             >
               Confirmar eliminar todo
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={sampleConfirmOpen} onOpenChange={setSampleConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Generar datos de ejemplo</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se crearán categorías y transacciones de ejemplo para que puedas probar la aplicación.
+              Esta acción reemplazará cualquier dato existente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                props.onGenerateSample?.()
+                setSampleConfirmOpen(false)
+              }}
+            >
+              Generar datos
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
